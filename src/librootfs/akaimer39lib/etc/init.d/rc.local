@@ -1,17 +1,24 @@
 #!/bin/sh
 
-# mount jffs2 file-system. 
-/bin/mount -t jffs2 /dev/mtdblock2 /etc/jffs2
-# note: can't recommend running other app before `mount` command.
+mount /dev/mmcblk0 /mnt
+mount /mnt/local /usr/local
 
 echo ds1307 0x68 > /sys/class/i2c-adapter/i2c-0/new_device
 hwclock -s
 ifconfig lo up
 
-/usr/bin/tcpsvd 0 21 ftpd /mnt &
+/usr/bin/tcpsvd 0 21 ftpd -w /mnt &
 
 /usr/bin/telnetd
-ntpd -p 218.75.4.130
+
+mkdir -p /etc/dropbear
+if [ ! -f /etc/dropbear/dropbear_rsa_host_key ]; then
+    dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+fi
+dropbear -B
+
+ntpd -q -p time.windows.com
+
+#/etc/init.d/wifi
 /etc/init.d/monitor.sh &
 /etc/jffs2/service.sh &
-

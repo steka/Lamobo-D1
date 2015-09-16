@@ -20,12 +20,6 @@ typedef struct encode{
 
 T_VIDEO_ENC videoEnc[eCHAN_NUM] = {{0}, {0}};
 
-T_pVOID hVS1;
-T_pVOID poutbuf;
-T_pVOID pencbuf;
-T_pVOID poutbuf2;
-T_pVOID pencbuf2;
-
 static T_pVOID enc_mutex_create(T_VOID)
 {
 	pthread_mutex_t *pMutex;
@@ -129,6 +123,7 @@ int encode_destroy(void)
 static T_pVOID encode_openLib(T_ENC_INPUT *pEncIn)
 {
 	T_VIDEOLIB_ENC_OPEN_INPUT open_input;
+	memset(&open_input, 0, sizeof(T_VIDEOLIB_ENC_OPEN_INPUT));
 	
 	if (pEncIn->video_tytes == 0)
 	{
@@ -151,6 +146,26 @@ static T_pVOID encode_openLib(T_ENC_INPUT *pEncIn)
 		open_input.encH264Par.lumHeightSrc 	= pEncIn->height;
 		open_input.encH264Par.horOffsetSrc 	= 0;
 		open_input.encH264Par.verOffsetSrc 	= 0;
+		switch (pEncIn->profile)
+		{
+		case 0:
+			// Baseline Profile
+			open_input.encH264Par.enableCabac = 0;
+			open_input.encH264Par.transform8x8Mode = 0;
+			break;
+		case 1: 
+			// Main Profile
+			open_input.encH264Par.enableCabac = 1;
+			open_input.encH264Par.transform8x8Mode = 0;
+			break;
+		case 2:
+			// High Profile
+			open_input.encH264Par.enableCabac = 1;
+			open_input.encH264Par.transform8x8Mode = 2;
+			break;
+		default:
+			break;
+		}
 	}
 	else if (pEncIn->video_tytes == 1)
 	{
@@ -198,8 +213,12 @@ int encode_open(T_ENC_INPUT *pEncIn1, T_ENC_INPUT *pEncIn2)
 		temp = akuio_vaddr2paddr(videoEnc[eCHAN_UNI].pBuff) & 7;
 		//编码buffer 起始地址必须8字节对齐
 		videoEnc[eCHAN_UNI].pPhysBuff = ((T_U8 *)videoEnc[eCHAN_UNI].pBuff) + ((8-temp)&7);
-		printf("pencbuf %p \n", videoEnc[eCHAN_UNI].pPhysBuff);
-		videoEnc[eCHAN_UNI].hVS = encode_openLib(pEncIn1);
+
+		if (!(videoEnc[eCHAN_UNI].hVS = encode_openLib(pEncIn1))) {
+			encode_close(eCHAN_UNI);
+			printf("Open EncodeLib Failure\n");
+			return -1;
+		}
 	}
 
 	if (pEncIn2)
@@ -213,8 +232,12 @@ int encode_open(T_ENC_INPUT *pEncIn1, T_ENC_INPUT *pEncIn2)
 		temp = akuio_vaddr2paddr(videoEnc[eCHAN_DUAL].pBuff) & 7;
 		//编码buffer 起始地址必须8字节对齐
 		videoEnc[eCHAN_DUAL].pPhysBuff = ((T_U8 *)videoEnc[eCHAN_DUAL].pBuff) + ((8-temp)&7);
-		printf("pencbuf %p \n", videoEnc[eCHAN_DUAL].pPhysBuff);
-		videoEnc[eCHAN_DUAL].hVS = encode_openLib(pEncIn2);
+
+		if (!(videoEnc[eCHAN_DUAL].hVS = encode_openLib(pEncIn2))) {			
+			encode_close(eCHAN_DUAL);
+			encode_close(eCHAN_UNI);
+			return -1;
+		}
 	}
 		
 	return 0;
@@ -229,54 +252,92 @@ int encode_open(T_ENC_INPUT *pEncIn1, T_ENC_INPUT *pEncIn2)
 * @return T_S32
 * @retval if return 0 success, otherwise failed 
 */
-int encode_frame(long *frameLenA, void *pinbuf, void **poutbuf, 
-					long *frameLenB, void *pinbuf2, void **poutbuf2, int *nIsIFrame)
+int encode_frame(long *frameLenA, void *pinbuf, void **poutbuf, int *nIsIFrame,
+					long *frameLenB, void *pinbuf2, void **poutbuf2, int *nIsIFrame2, unsigned char vbr)
 {
 	T_VIDEOLIB_ENC_IO_PAR video_enc_param1;
 	T_VIDEOLIB_ENC_IO_PAR video_enc_param2;
-	static int IPctrl = 0;
+	static int IFCtrl_1 = 0;
+	static int IFCtrl_2 = 0;
 	
-	video_enc_param1.QP = 0;					//编码当前帧的QP
-	if (IPctrl == 0)
-	{
-		video_enc_param1.mode = 0;				//编码类型I/P帧, 0:I，1:P
-		video_enc_param2.mode = 0;
-		*nIsIFrame = 1;
-	}
-	else
-	{
-		video_enc_param1.mode = 1;
-		video_enc_param2.mode = 1;
-		*nIsIFrame = 0;
-	}
-	video_enc_param1.p_curr_data = pinbuf;		//yuv输入地址
-	video_enc_param1.p_vlc_data = videoEnc[eCHAN_UNI].pPhysBuff;			//码流输出地址
-	video_enc_param1.out_stream_size = ENCMEM;	//输出码流的大小
+	// 1st Channel
+	if (pinbuf) {
+		//编码当前帧的QP
+		if (vbr) 		
+			video_enc_param1.QP = 30;
+		else 
+			video_enc_param1.QP = 0;
+		
+		//编码类型I/P帧, 0:I，1:P
+		if (IFCtrl_1 == 0) {			
+			video_enc_param1.mode = 0;
+			*nIsIFrame = 1;
+		}
+		else {
+			video_enc_param1.mode = 1;
+			*nIsIFrame = 0;
+		}
 
-	//dual encode 
-	if (pinbuf2 != AK_NULL)
-	{
-		video_enc_param2.QP = 0;					//编码当前帧的QP
-		video_enc_param2.p_curr_data = pinbuf2;		//yuv输入地址
-		video_enc_param2.p_vlc_data = videoEnc[eCHAN_DUAL].pPhysBuff;			//码流输出地址
-		video_enc_param2.out_stream_size = ENCMEM;	//输出码流的大小
+		//I frame interval is 30
+		if (++IFCtrl_1 >= 30)
+			IFCtrl_1 = 0;
+		//yuv输入地址
+		video_enc_param1.p_curr_data 	= pinbuf;	
+		//码流输出地址
+		video_enc_param1.p_vlc_data		= videoEnc[eCHAN_UNI].pPhysBuff;
+		//输出码流的大小
+		video_enc_param1.out_stream_size = ENCMEM;
+	}
+
+	// 2nd Channel
+	if (pinbuf2) {
+		//编码当前帧的QP
+		if (vbr) 		
+			video_enc_param2.QP = 30;
+		else 
+			video_enc_param2.QP = 0;
+		
+		//编码类型I/P帧, 0:I，1:P
+		if (IFCtrl_2 == 0) {			
+			video_enc_param2.mode = 0;
+			*nIsIFrame2 = 1;
+		}
+		else {
+			video_enc_param2.mode = 1;
+			*nIsIFrame2 = 0;
+		}
+		//I frame interval is 30
+		if (++IFCtrl_2 >= 30)
+			IFCtrl_2 = 0;
+		
+		//yuv输入地址
+		video_enc_param2.p_curr_data 	= pinbuf2;	
+		//码流输出地址
+		video_enc_param2.p_vlc_data		= videoEnc[eCHAN_DUAL].pPhysBuff;
+		//输出码流的大小
+		video_enc_param2.out_stream_size = ENCMEM;
+	}
+
+	//dual encode , 1st & 2nd Channel
+	if (pinbuf != AK_NULL && pinbuf2 != AK_NULL) {		
 		VideoStream_Enc_Encode(videoEnc[eCHAN_UNI].hVS, videoEnc[eCHAN_DUAL].hVS, &video_enc_param1, &video_enc_param2);
-		*poutbuf2 = video_enc_param2.p_vlc_data;
-		*frameLenB = video_enc_param2.out_stream_size;
+		*poutbuf 	= video_enc_param1.p_vlc_data;
+		*frameLenA 	= video_enc_param1.out_stream_size;
+		*poutbuf2 	= video_enc_param2.p_vlc_data;
+		*frameLenB 	= video_enc_param2.out_stream_size;
 	}
-	//single encode
-	else
-	{
+	//single encode, 1st Channel
+	else if (pinbuf) {
 		VideoStream_Enc_Encode(videoEnc[eCHAN_UNI].hVS, AK_NULL, &video_enc_param1, AK_NULL);
+		*poutbuf 	= video_enc_param1.p_vlc_data;
+		*frameLenA 	= video_enc_param1.out_stream_size;
 	}
-	
-	*poutbuf = video_enc_param1.p_vlc_data;
-	*frameLenA = video_enc_param1.out_stream_size;
-	
-	IPctrl++;
-	//I frame interval is 30
-	if (IPctrl >= 30)
-		IPctrl = 0;
+	//single encode, 2nd Channel
+	else if (pinbuf2) {
+		VideoStream_Enc_Encode(videoEnc[eCHAN_DUAL].hVS, AK_NULL, &video_enc_param2, AK_NULL);
+		*poutbuf2 	= video_enc_param2.p_vlc_data;
+		*frameLenB 	= video_enc_param2.out_stream_size;
+	}
 	
 	return 0;
 }
@@ -292,12 +353,16 @@ int encode_frame(long *frameLenA, void *pinbuf, void **poutbuf,
 */
 int encode_close(T_REC_CHAN chan)
 {
-	VideoStream_Enc_Close(videoEnc[chan].hVS);
-	videoEnc[chan].hVS = NULL;
-	
-	akuio_free_pmem(videoEnc[chan].pBuff);
-	videoEnc[chan].pBuff = NULL;
-	videoEnc[chan].pPhysBuff = NULL;
+	if (videoEnc[chan].hVS){
+		VideoStream_Enc_Close(videoEnc[chan].hVS);
+		videoEnc[chan].hVS = NULL;
+	}
+
+	if (videoEnc[chan].pBuff){
+		akuio_free_pmem(videoEnc[chan].pBuff);
+		videoEnc[chan].pBuff = NULL;
+		videoEnc[chan].pPhysBuff = NULL;
+	}
 	
 	return 0;
 }

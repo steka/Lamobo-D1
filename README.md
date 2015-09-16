@@ -1,8 +1,10 @@
 # Lamobo-D1 Development Environment
----
+
+## The Latest Build
+
+[![Build Status](https://drone.io/github.com/Lamobo/Lamobo-D1/status.png)](https://drone.io/github.com/Lamobo/Lamobo-D1/latest) [Download](https://drone.io/github.com/Lamobo/Lamobo-D1/files)
 
 ## Firmware Build Steps
----
 
 0. Tested OS
 
@@ -26,7 +28,8 @@
 
     ```
     cd ~/Lamobo-D1/output
-    ls -l zImage root.sqsh4 root.jffs2
+    ls -l D1_Basic*.zip
+    ls -l D1_Extra*.zip
     ```
 
 4. Clean
@@ -36,7 +39,6 @@
     ```
 
 ## Firmware Flash Steps
----
 
 0. Tested OS
 
@@ -46,8 +48,7 @@
 1. Prepare
 
     1. [PC] Connect D1 flashing port to PC via USB cable
-    2. [PC] Copy build result (zImage, root.sqsh4 and root.jffs2)
-    to the directory where BurnTool.exe resides
+    2. [PC] Extract D1_Basic*.zip (firmware and burntool)
 
 2. Flash
 
@@ -55,6 +56,7 @@
     2. [D1] Power on D1 (press and hold "function" key before power on)
     3. [PC] Hold "Boot/WPS" key and wait until "Burn Tool" displays "Ready"
     4. [PC] Start flashing by click "Start" in "Burn Tool"
+    5. [PC] [Optional] Extract D1_Extra*.zip (extra programs) to the TFCard
 
 3. Complete
 
